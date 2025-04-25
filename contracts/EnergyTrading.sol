@@ -25,8 +25,17 @@ contract EnergyTrading {
     event EnergyListed(address prosumer, uint amount);
     event EnergyPurchased(address consumer, address prosumer, uint amount, uint price);
 
+    bool private locked;
+    modifier nonReentrant() {
+        require(!locked, "No reentrancy");
+        locked = true;
+        _;
+        locked = false;
+    }
+
+    error NotProsumer();
     modifier onlyProsumer() {
-        require(users[msg.sender].role == Role.Prosumer, "Not a prosumer");
+        if (users[msg.sender].role != Role.Prosumer) revert NotProsumer();
         _;
     }
 
@@ -36,11 +45,13 @@ contract EnergyTrading {
     }
 
     function registerAsProsumer() external {
+        require(users[msg.sender].role == Role.None, "Already registered");
         users[msg.sender] = User(Role.Prosumer, 0);
         emit Registered(msg.sender, Role.Prosumer);
     }
 
     function registerAsConsumer() external {
+        require(users[msg.sender].role == Role.None, "Already registered");
         users[msg.sender] = User(Role.Consumer, 0);
         emit Registered(msg.sender, Role.Consumer);
     }
@@ -50,21 +61,20 @@ contract EnergyTrading {
         emit EnergyListed(msg.sender, _amount);
     }
 
-    function buyEnergy(address _prosumer, uint _amount, uint _pricePerKWh) external payable onlyConsumer {
+    function buyEnergy(address _prosumer, uint _amount, uint _pricePerKWh) external payable onlyConsumer nonReentrant {
         require(users[_prosumer].role == Role.Prosumer, "Seller not a prosumer");
         require(users[_prosumer].energyBalance >= _amount, "Not enough energy");
         
         uint totalPrice = _amount * _pricePerKWh;
         require(msg.value >= totalPrice, "Not enough ETH sent");
 
-        // Transfer ETH to prosumer
-        payable(_prosumer).transfer(totalPrice);
+       (bool success, ) = _prosumer.call{value: totalPrice}("");
+       require(success, "ETH transfer failed");
 
         // Update balances
         users[_prosumer].energyBalance -= _amount;
         users[msg.sender].energyBalance += _amount;
 
-        // Store trade record
         trades.push(Trade({
             prosumer: _prosumer,
             consumer: msg.sender,

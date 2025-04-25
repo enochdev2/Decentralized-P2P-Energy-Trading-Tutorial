@@ -1,11 +1,5 @@
-import {
-  time,
-  loadFixture,
-} from "@nomicfoundation/hardhat-toolbox/network-helpers";
-import { anyValue } from "@nomicfoundation/hardhat-chai-matchers/withArgs";
 import { expect } from "chai";
-import hre, { ethers } from "hardhat";
-// import { BigNumber } from "ethers"; // ✅ Correct
+import hre from "hardhat";
 
 
 describe("EnergyTrading", function() {
@@ -47,7 +41,7 @@ describe("EnergyTrading", function() {
       await energy.connect(consumer).registerAsConsumer();
       await expect(
         energy.connect(consumer).addEnergy(AMOUNT)
-      ).to.be.revertedWith("Not a prosumer");
+      ).to.be.revertedWithCustomError(energy, "NotProsumer");
     });
 
     it("blocks buyEnergy for non‑consumer", async function() {
@@ -81,7 +75,7 @@ describe("EnergyTrading", function() {
       await energy.connect(consumer).registerAsConsumer();
     });
 
-    it("allows consumer to buy energy, transfers ETH, updates balances, logs trade", async function() {
+    it("Include Gas Cost Calculation and allows consumer to buy energy, transfers ETH, updates balances, logs trade", async function() {
     const AMOUNT = hre.ethers.toNumber("100");        // 100 kWh
     const PRICE_PER_KWH = hre.ethers.toNumber("5");   // 5 wei per kWh
 
@@ -120,6 +114,58 @@ describe("EnergyTrading", function() {
         expect(trade.totalPrice).to.equal(totalPrice);
         // expect(trade.timestamp).to.be.a("number");
       });
+
+      it("allows consumer to buy energy, transfers ETH, updates balances, logs trade", async function() {
+        const AMOUNT = 100;
+        const PRICE_PER_KWH = 5;
+        totalPrice = BigInt(AMOUNT * PRICE_PER_KWH);
+      
+        const beforeProsumerEth = await hre.ethers.provider.getBalance(prosumer.address);
+        const beforeConsumerEth = await hre.ethers.provider.getBalance(consumer.address);
+      
+        const txResponse = await energy.connect(consumer).buyEnergy(
+          prosumer.address,
+          AMOUNT,
+          PRICE_PER_KWH,
+          { value: totalPrice }
+        );
+      
+        const txReceipt = await txResponse.wait();
+        const gasUsed = txReceipt.gasUsed;
+        const gasPrice = txResponse.gasPrice ?? txReceipt.effectiveGasPrice;
+        const gasCost = gasUsed * gasPrice;
+      
+        console.log("📊 Gas used:", gasUsed.toString());
+        console.log("💰 Gas price:", gasPrice.toString());
+        console.log("💸 Total gas cost (wei):", gasCost.toString());
+      
+        const afterProsumerEth = await hre.ethers.provider.getBalance(prosumer.address);
+        expect(afterProsumerEth - beforeProsumerEth).to.equal(totalPrice);
+      
+        const afterConsumerEth = await hre.ethers.provider.getBalance(consumer.address);
+        const ethDiff = beforeConsumerEth - afterConsumerEth;
+        const expectedSpent = totalPrice + gasCost;
+      
+        expect(ethDiff).to.be.closeTo(expectedSpent, 10n ** 12n); // Allow minor variance
+      
+        // Check balances
+        const prosumerBal = (await energy.getUser(prosumer.address)).energyBalance;
+        const consumerBal = (await energy.getUser(consumer.address)).energyBalance;
+        expect(prosumerBal).to.equal(0);
+        expect(consumerBal).to.equal(AMOUNT);
+      
+        // Check trade log
+        const trades = await energy.getTradeHistory();
+        expect(trades.length).to.equal(1);
+        const trade = trades[0];
+        expect(trade.prosumer).to.equal(prosumer.address);
+        expect(trade.consumer).to.equal(consumer.address);
+        expect(trade.amount).to.equal(AMOUNT);
+        expect(trade.pricePerKWh).to.equal(PRICE_PER_KWH);
+        expect(trade.totalPrice).to.equal(totalPrice);
+      });
+      
+      
 
       it("reverts if not enough ETH sent", async function() {
         const totalPrice = BigInt(AMOUNT) * PRICE_PER_KWH; // recalculate
